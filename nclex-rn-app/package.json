@@ -1,0 +1,59 @@
+{
+  "name": "nclex-rn",
+  "private": true,
+  "version": "3.6.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "desktop": "vite build && electron .",
+    "desktop:build": "vite build && electron-builder --win --publish never"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/splash-screen": "^6.0.0",
+    "@fontsource/cairo": "^5.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2",
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "main": "electron/main.cjs",
+  "description": "NCLEX-RN",
+  "author": "NCLEX-RN",
+  "build": {
+    "appId": "com.nclexrn.desktop",
+    "productName": "NCLEX-RN",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "assets/icon-only.png",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/icon-only.png",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "NCLEX-RN-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "NCLEX-RN-Portable-${version}.${ext}"
+    }
+  }
+}
