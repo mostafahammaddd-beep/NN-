@@ -1,0 +1,33 @@
+name: Build Desktop (Windows)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build web app + Windows installer
+        run: npm run desktop:build
+        env:
+          # Optional: same GEMINI_API_KEY secret as the APK build
+          VITE_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Upload installer + portable exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: NCLEX-RN-windows
+          path: |
+            release/NCLEX-RN-Setup-*.exe
+            release/NCLEX-RN-Portable-*.exe
