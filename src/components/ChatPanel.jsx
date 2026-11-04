@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import Icon from "./Icon.jsx";
 import { RichText } from "./rich.jsx";
 import ExamCard from "./ExamCard.jsx";
@@ -65,6 +66,7 @@ function svgToPngBlob(src) {
 }
 
 function GenImage({ img, via }) {
+  const [big, setBig] = useState(false);
   const src = `data:${img.mime};base64,${img.data}`;
   const save = async () => {
     const svg = img.mime === "image/svg+xml";
@@ -82,13 +84,47 @@ function GenImage({ img, via }) {
   };
   return (
     <figure className="chat-gen">
-      <img src={src} alt="صورة اتولّدت" />
+      {/* tap the picture → it fills the screen */}
+      <button type="button" className="chat-gen-zoom" onClick={() => setBig(true)} aria-label="تكبير الصورة على الشاشة كلها" title="دوس لتكبير الصورة">
+        <img src={src} alt="صورة اتولّدت" />
+        <span className="chat-gen-badge"><Icon name="maximize" size={15} /></span>
+      </button>
       <div className="chat-gen-foot">
         <button type="button" className="btn btn-ghost btn-sm" onClick={save}><Icon name="download" size={16} /> حفظ الصورة</button>
         {via && <small>{via}</small>}
       </div>
+      {big && <Lightbox src={src} onClose={() => setBig(false)} onSave={save} />}
     </figure>
   );
+}
+
+/* full-screen viewer (portal → sits above the floating window, whatever its size) */
+function Lightbox({ src, onClose, onSave }) {
+  useEffect(() => {
+    const k = (e) => { if (e.key === "Escape") onClose(); };
+    const prev = document.body.style.overflow;
+    window.addEventListener("keydown", k);
+    document.body.style.overflow = "hidden";
+    return () => { window.removeEventListener("keydown", k); document.body.style.overflow = prev; };
+  }, [onClose]);
+  const stop = (e) => e.stopPropagation();
+  return createPortal(
+    <div className="lightbox" role="dialog" aria-modal="true" aria-label="عرض الصورة" onPointerDown={stop} onClick={(e) => { e.stopPropagation(); onClose(); }}>
+      <img src={src} alt="الصورة مكبّرة" onClick={stop} />
+      <div className="lightbox-bar" onClick={stop}>
+        <button type="button" className="lightbox-btn" onClick={onSave} aria-label="حفظ الصورة"><Icon name="download" size={20} /></button>
+        <button type="button" className="lightbox-btn" onClick={onClose} aria-label="إغلاق"><Icon name="x" size={20} /></button>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/* seconds counter while a picture is being drawn: proof that it is alive */
+function Secs() {
+  const [n, setN] = useState(0);
+  useEffect(() => { const t = setInterval(() => setN((v) => v + 1), 1000); return () => clearInterval(t); }, []);
+  return <small className="chat-secs">{n}ث</small>;
 }
 
 /* ── floating-window size (the "AI" window): remembered, never bigger than the screen ── */
@@ -413,7 +449,7 @@ export default function ChatPanel({
                 {m.text && <RichText text={m.text} />}
                 {m.exam && <ExamCard exam={m.exam} busy={busy} onChange={(ex) => setExam(m.id, ex)} onAsk={(t, o) => send(t, o)} />}
                 {!m.text && !m.exam && !m.err && !m.stopped && !m.img && (
-                  <span className="chat-typing">{m.gen ? (wait || "بيرسم الصورة") : m.isExam ? "بيجهّز الامتحان" : "بيفكّر"}<i /><i /><i /></span>
+                  <span className="chat-typing">{m.gen ? (wait || "بيرسم الصورة") : m.isExam ? "بيجهّز الامتحان" : "بيفكّر"}<i /><i /><i />{m.gen && <Secs />}</span>
                 )}
                 {m.refs && m.refs.length > 0 && (
                   <div className="chat-refs">

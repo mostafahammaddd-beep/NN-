@@ -43,7 +43,8 @@ export default function WordPop({ apiKey }) {
       if (blocked(target)) return;
       const w = wordAt(x, y);
       if (!w) return;
-      const cx = Math.min(Math.max(w.rect.left + w.rect.width / 2, 130), window.innerWidth - 130);
+      const half = Math.min(170, (window.innerWidth - 20) / 2) + 6;
+      const cx = Math.min(Math.max(w.rect.left + w.rect.width / 2, half), window.innerWidth - half);
       const below = w.rect.top < 96;
       setPop({ word: w.word, context: w.context, x: cx, y: below ? w.rect.bottom + 8 : w.rect.top - 8, below });
     };
@@ -78,7 +79,7 @@ export default function WordPop({ apiKey }) {
     if (!keyRef.current) { setMeaning(""); setState("nokey"); return undefined; }
     setMeaning(""); setState("load");
     const ctrl = new AbortController();
-    translateWord({ apiKey: keyRef.current, word: pop.word, context: pop.context, signal: ctrl.signal })
+    translateWord({ apiKey: keyRef.current, word: pop.word, context: pop.context, signal: ctrl.signal, onQuick: (q) => { if (!ctrl.signal.aborted) { setMeaning(q); setState("idle"); } } })
       .then((m) => { if (!ctrl.signal.aborted) { setMeaning(m); setState(m ? "idle" : "err"); } })
       .catch(() => { if (!ctrl.signal.aborted) setState("err"); });
     return () => ctrl.abort();
@@ -87,16 +88,18 @@ export default function WordPop({ apiKey }) {
   if (!pop) return null;
   return (
     <div ref={ref} className="wordpop" data-below={pop.below} style={{ left: pop.x, top: pop.y }} role="dialog" aria-label={`معنى ${pop.word}`}>
-      <SpeakBtn text={pop.word} label={`اسمع نطق ${pop.word}`} />
-      <div className="wordpop-body">
-        <bdi dir="ltr" className="wordpop-word">{pop.word}</bdi>
-        <span className="wordpop-mean" data-s={state}>
-          {state === "load" ? "بنترجم…" : state === "nokey" ? "حط مفتاح Gemini الأول 🔑" : state === "err" ? "مقدرتش أترجمها. جرّب تاني" : meaning}
-        </span>
-        {/* any word you look up can be saved to the dictionary right here */}
-        {state === "idle" && meaning && <ClassifyBar term={pop.word} line={`${pop.word} — ${meaning}`} src={null} />}
-        {state === "err" && <ClassifyBar term={pop.word} line={pop.word} src={null} />}
+      <div className="wordpop-head">
+        <div className="wordpop-body">
+          <bdi dir="ltr" className="wordpop-word">{pop.word}</bdi>
+          <span className="wordpop-mean" data-s={state}>
+            {state === "load" ? "بنترجم…" : state === "nokey" ? "حط مفتاح Gemini الأول 🔑" : state === "err" ? "مقدرتش أترجمها. جرّب تاني" : meaning}
+          </span>
+        </div>
+        <SpeakBtn text={pop.word} label={`اسمع نطق ${pop.word}`} />
       </div>
+      {/* any word you look up can be saved to the dictionary right here */}
+      {state === "idle" && meaning && <ClassifyBar term={pop.word} line={`${pop.word} — ${meaning}`} src={null} />}
+      {state === "err" && <ClassifyBar term={pop.word} line={pop.word} src={null} />}
     </div>
   );
 }
