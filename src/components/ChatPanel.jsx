@@ -50,18 +50,26 @@ function forStorage(messages) {
 /* an SVG drawing is saved as a PNG (opens everywhere, shares well from a phone) */
 function svgToPngBlob(src) {
   return new Promise((resolve, reject) => {
+    let url = src, w = 1200, h = 800;
+    try {   // render from the viewBox at 2400 px (the <img> natural size of an SVG is tiny → blurry PNG)
+      const txt = decodeURIComponent(escape(atob(src.split(",")[1])));
+      const m = txt.match(/viewBox="\s*[\d.]+[\s,]+[\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/);
+      if (m) { w = +m[1]; h = +m[2]; }
+      const k = 2400 / Math.max(w, h); w = Math.round(w * k); h = Math.round(h * k);
+      const fixed = txt.replace(/<svg\b([^>]*)>/, (a, at) => `<svg${at.replace(/\s(width|height)="[^"]*"/g, "")} width="${w}" height="${h}">`);
+      url = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(fixed)));
+    } catch (e) { /* keep the original */ }
     const im = new Image();
     im.onload = () => {
-      const w = im.naturalWidth || 1200, h = im.naturalHeight || 800, k = 2;
       const c = document.createElement("canvas");
-      c.width = w * k; c.height = h * k;
+      c.width = w; c.height = h;
       const g = c.getContext("2d");
-      g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
-      g.drawImage(im, 0, 0, c.width, c.height);
+      g.fillStyle = "#fff"; g.fillRect(0, 0, w, h);
+      g.drawImage(im, 0, 0, w, h);
       c.toBlob((b) => (b ? resolve(b) : reject(new Error("png"))), "image/png");
     };
     im.onerror = () => reject(new Error("img"));
-    im.src = src;
+    im.src = url;
   });
 }
 
@@ -161,7 +169,7 @@ export default function ChatPanel({
   const [files, setFiles] = useState([]);        // pending attachments for the next message
   const [imgMode, setImgMode] = useState(false); // next message → draw a picture
   const [examMode, setExamMode] = useState(false); // next message → build an exam
-  const [engine, setEng] = useState(getEngine);   // diagram | art | gemini
+  const [engine, setEng] = useState(getEngine);   // diagram | gemini
   const [wait, setWait] = useState("");
   const [note, setNote] = useState("");
   const [over, setOver] = useState(false);
@@ -266,9 +274,8 @@ export default function ChatPanel({
       if (wantImage) {
         const out = await makePicture({
           engine, apiKey, ctx, request: q, atts, signal: ctrl.signal,
-          onStatus: (s) => setWait(s === "wait" ? "خدمة الصور المجانية بتاخد دورها… ثواني" : ""),
-        });
-        const via = `${{ diagram: "رسم توضيحي بالمفتاح المجاني", art: "صورة AI فنية مجانية (Pollinations)", gemini: "Gemini" }[out.engine]}${out.notes.length ? " · " + out.notes[0] : ""}`;
+                  });
+        const via = `${{ diagram: "رسم توضيحي بالمفتاح المجاني", gemini: "Gemini" }[out.engine]}${out.notes.length ? " · " + out.notes[0] : ""}`;
         patch(ai.id, (m) => ({ ...m, img: { mime: out.mime, data: out.data }, text: fixText(out.text || ""), via }));
       } else if (wantExam) {
         const here = ctx.kind === "global" ? "" : `${ctx.kind === "lesson" ? "STUDY MATERIAL" : "QUESTION"}: ${String(ctx.question || "").slice(0, 1800)}\nEXPLANATION: ${String(ctx.explanation || "").slice(0, 2200)}`;

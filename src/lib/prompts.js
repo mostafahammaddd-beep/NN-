@@ -6,7 +6,7 @@
 
    Five focused jobs (each prompt does ONE thing well, and they run in parallel where possible):
    1) OCR      → question text                          (fast model, no thinking)
-   2) WORDS    → every word at B1 level or higher                  (fast model, no thinking)
+   2) WORDS    → every word at B2 level or higher                  (fast model, no thinking)
    3) SOLVE    → verified answer + per-option verdicts  (strong model, thinks, tiny output)
    4) LESSON A → ask · decode English · basics          (fast model, needs no answer → starts at t = 0)
    5) LESSON B → steps · options · answer · memo · tricks (fast model, starts when SOLVE has the answer) */
@@ -38,7 +38,7 @@ Output PLAIN TEXT only (no markdown, no JSON, no code fences, no commentary):
   };
 }
 
-/* 2 ─ New words (B1 level or higher) */
+/* 2 ─ New words (B2 level or higher) */
 export function buildWordsPrompt(chipIds, kind = "question") {
   const english = has(chipIds, "en");
   const meaning = english
@@ -52,17 +52,17 @@ export function buildWordsPrompt(chipIds, kind = "question") {
 
 The image shows ONE NCLEX-style question. Read EVERY word in it: the stem, the patient data, any exhibit / table / lab values, and ALL the answer options (for Next-Gen items also every tab, drop-down choice and matrix row).
 
-TASK: list EVERY word or short phrase in the image whose level is B1 OR HIGHER (B1, B2, C1, C2) and every medical / nursing term.
-B1 itself IS included: a word that is exactly at B1 level (not a beginner word) belongs in the list. Only the beginner levels A1 and A2 are left out.
-Be thorough. There is NO fixed maximum — a typical question gives 15 to 40 entries. Never stop early.
+TASK: list the words and short phrases in the image whose CEFR level is REALLY B2 or higher (B2, C1, C2), plus every medical / nursing term. The levels A1, A2 and B1 are all left out: he already knows them.
+
+HOW TO JUDGE THE LEVEL (most important rule): use the official CEFR levels of the Oxford 3000 / Oxford 5000 lists and the English Vocabulary Profile. Do NOT judge by how "hard" a word feels. If a general word is A1, A2 or B1 there, it is KNOWN: never list it. List a general (non-medical) word only when you are CONFIDENT that its CEFR level is B2 or higher (upper-intermediate, advanced, or academic / formal vocabulary). If you are unsure, if it is a B1/B2 borderline word, or if it is a common everyday word that an intermediate learner already knows, LEAVE IT OUT. A shorter list of real B2+ words is far better than a long list padded with easier ones. Silently check every general word against this rule before you write it.
+There is no fixed maximum, but never pad the list: a typical question gives about 5 to 25 entries.
 
 INCLUDE:
-• medical, nursing and anatomy terms; diseases, symptoms, procedures, tests and lab names; drug names (add the drug class inside the meaning when you know it)
+• medical, nursing and anatomy terms that a layperson would not know; diseases, symptoms, procedures, tests and lab names; drug names (add the drug class inside the meaning when you know it)
 • abbreviations and symbols (NPO, PRN, BID, IV, I&O, mmHg …) — give the full form too
-• general English words at B1, B2, C1 or C2 level (e.g. monitor, ensure, report, appropriate, recommend, instruct, immediately, expected, further, prioritize, intervene, adverse, ensue, administer, contraindicated, exacerbation, subsequent, refrain, impaired, deteriorate, cessation), phrasal verbs and idioms
+• general English words that are truly B2, C1 or C2 (e.g. appropriate, adverse, subsequent, impaired, deteriorate, intervene, contraindicated, exacerbation, refrain, cessation, prioritize, comply, reinforce, impending, ensue, mitigate, exhibit, manifest, concurrent, adhere, ambulate), plus phrasal verbs and idioms that are not obvious (rule out, carry out, cut back on, bring about)
 • exam keywords: EXCEPT, FIRST, BEST, NEXT, MOST, PRIORITY, "requires further teaching" …
-EXCLUDE only beginner words at A1 or A2 level (patient, nurse, doctor, hospital, pain, blood, water, eat, drink, sleep, walk, go, take, good, bad, big …), people's names, plain numbers and units.
-If you hesitate between A2 and B1 for a general word, include it; if it is a medical or clinical term, always include it.
+EXCLUDE (never list): every A1, A2 and B1 word, and every everyday word, even if you think it is "a bit above easy". Examples that must NOT appear: patient, nurse, doctor, hospital, pain, blood, water, eat, drink, sleep, walk, go, take, good, bad, big, ask, check, feel, need, help, tell, keep, wait, call, change, follow, problem, important, normal, usual, sudden, ready, explain, show, plan, visit, move, stay, start, stop, enough, early, quickly, slowly, careful, difficult, dangerous, tired, worried, serious, recommend, ensure, report, immediately, expected, further, avoid, reduce, increase, prevent, require, include, provide, monitor, instruct, immediately, likely, regularly, assist, notify. Also exclude people's names, plain numbers and units, and plain everyday body words and symptoms everybody knows (heart, hand, head, leg, cough …).
 
 HOW TO WORK: go through the text sentence by sentence, then option by option, in reading order, so nothing is skipped. Write every entry once (no duplicates) and keep the exact form used in the question (e.g. "edematous"). Give the meaning that fits THIS question.
 
@@ -81,8 +81,8 @@ function asStudy(p) {
   return {
     system: p.system
       .replace(/The image shows ONE NCLEX-style question\. Read EVERY word in it:[^\n]*/, "The files contain STUDY MATERIAL (book pages, lecture notes, slides, tables, pasted text). Read ALL of it.")
-      .replace("in the image whose level is B1", "in the material whose level is B1")
-      .replace(/Be exhaustive\. There is NO maximum[^\n]*/, "Be thorough. For long material keep the most useful entries (up to about 90): medical and nursing terms first, then exam English.")
+      .replace("in the image whose CEFR level", "in the material whose CEFR level")
+      .replace(/There is no fixed maximum, but never pad the list: a typical question gives about [^\n]*/, "There is no fixed maximum, but never pad the list. For long material keep the most useful entries (up to about 90): medical and nursing terms first, then the B2+ exam English.")
       .replace("go through the text sentence by sentence, then option by option, in reading order", "go through the material in reading order")
       .replace("fits THIS question.", "fits THIS material."),
     user: "List the new words for the study material.",

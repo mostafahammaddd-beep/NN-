@@ -26,6 +26,22 @@ export function cleanOcr(raw) {
 }
 
 /* New words: while streaming only COMPLETE lines are shown (no flickering half-words). */
+import { BASIC } from "./basicwords.js";
+
+const forms = (w) => [w, w.replace(/'s$/, ""), w.replace(/(e)?s$/, ""), w.replace(/ies$/, "y"), w.replace(/ed$/, ""), w.replace(/d$/, ""), w.replace(/ied$/, "y"),
+  w.replace(/ing$/, ""), w.replace(/ing$/, "e"), w.replace(/(.)\1(ed|ing)$/, "$1"), w.replace(/ly$/, ""), w.replace(/er$/, "")];
+const isBasicWord = (w) => forms(w).some((f) => f && BASIC.has(f));
+
+/* beginner (A1/A2) entry? abbreviations (NPO, IV, I&O), numbers and anything medical are never dropped */
+export function isEasy(term) {
+  const t = String(term || "").trim();
+  if (!t || !/[a-z]/.test(t)) return false;
+  const toks = t.toLowerCase().replace(/[^a-z' -]/g, " ").split(/[\s-]+/).filter(Boolean);
+  if (!toks.length) return false;
+  if (toks.length === 1 && toks[0].length <= 2) return true;
+  return toks.every(isBasicWord);
+}
+
 export function cleanWords(raw, final) {
   let lines = stripFences(raw || "").replace(/\r/g, "").split("\n");
   if (!final) lines = lines.slice(0, -1);
@@ -35,7 +51,7 @@ export function cleanWords(raw, final) {
   const seen = new Set();
   lines = lines.filter((l) => {
     const k = parseWord(l).term.toLowerCase();
-    if (!k || seen.has(k)) return false;
+    if (!k || seen.has(k) || isEasy(parseWord(l).term)) return false;
     seen.add(k);
     return true;
   });

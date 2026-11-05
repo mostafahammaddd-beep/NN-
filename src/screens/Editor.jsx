@@ -31,7 +31,7 @@ const Skeleton = ({ hint }) => (
   </div>
 );
 
-const ResultSection = memo(function ResultSection({ section, value, onChange, running, error, onRetry, defaultOpen, src }) {
+const ResultSection = memo(function ResultSection({ section, value, onChange, running, error, note, onRetry, defaultOpen, src }) {
   const { key, title, sub, icon, rows, cls, ltr, wait } = section;
   const [editing, setEditing] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -89,6 +89,7 @@ const ResultSection = memo(function ResultSection({ section, value, onChange, ru
         ) : (
           <RichText text={value} />
         )}
+        {running && note && !error && <div className="sec-note" role="status"><i /> {note}</div>}
         {error && (
           <div className="sec-err" role="alert">
             <p>{error.message}</p>
@@ -164,6 +165,7 @@ export default function Editor({ initial, history, kind: kindProp, boot, apiKey,
   } : null);
   const [status, setStatus] = useState({});      // task → run | done | error | stopped
   const [errors, setErrors] = useState({});      // task → { message, detail }
+  const [notes, setNotes] = useState({});        // task → calm "Google is busy, retrying" note (not an error)
   const [models, setModels] = useState({});
   const [error, setError] = useState(null);      // page-level message
   const [snap, setSnap] = useState(null);
@@ -339,13 +341,17 @@ export default function Editor({ initial, history, kind: kindProp, boot, apiKey,
   }, [flush]);
 
   /* ── the analysis ── */
+  const onNotice = (name, x) => setNotes((n) => ({ ...n, [name]: `سيرفر Google زحمة دلوقتي، بنعيد المحاولة تلقائي${x.attempt > 1 ? ` (محاولة ${x.attempt})` : ""}… مفيش داعي تعمل حاجة` }));
+  const clearNote = (name) => setNotes((n) => (n[name] ? { ...n, [name]: null } : n));
   const onUpdate = (name, data, meta) => {
+    clearNote(name);
     feed(tracker.current, name, meta.chars);
     if (meta.model) setModels((m) => (m[name] === meta.model ? m : { ...m, [name]: meta.model }));
     queue(data, meta.final);
   };
 
   const onDone = (name, m) => {
+    clearNote(name);
     setTiming((t) => ({ ...t, [name]: m }));
     settle(tracker.current, name, "done");
     setStatus((s) => ({ ...s, [name]: "done" }));
@@ -363,6 +369,7 @@ export default function Editor({ initial, history, kind: kindProp, boot, apiKey,
   };
 
   const onError = (name, err, partial) => {
+    clearNote(name);
     settle(tracker.current, name, "error");
     setStatus((s) => ({ ...s, [name]: "error" }));
     setErrors((e) => ({ ...e, [name]: { message: err.message || "حصلت مشكلة أثناء التحليل.", detail: err.detail } }));
@@ -397,7 +404,7 @@ export default function Editor({ initial, history, kind: kindProp, boot, apiKey,
 
   const makeAnalysis = (hint) => createAnalysis({
     kind, history, dataUrl: imageUrl, doc, extra: hint ? `${hint}` : instructions, chips, apiKey, modeId: mode,
-    onUpdate, onDone, onError,
+    onUpdate, onDone, onError, onNotice,
   });
 
   /* several files, or a note that picks questions → first find the questions (one small request), then analyse each one alone */
@@ -435,7 +442,7 @@ export default function Editor({ initial, history, kind: kindProp, boot, apiKey,
     prev.current = result;
     tracker.current = createTracker(mode, perfRef.current);
     setSnap(snapshot(tracker.current));
-    setError(null); setErrors({}); setModels({}); setLastRun(null); setTiming({});
+    setError(null); setErrors({}); setNotes({}); setModels({}); setLastRun(null); setTiming({});
     setResult({ ...NULLS });
     setStatus({ ocr: "run", words: "run", reason: "run" });
     an.current = makeAnalysis(hint);
@@ -611,7 +618,7 @@ export default function Editor({ initial, history, kind: kindProp, boot, apiKey,
               const task = TASK_OF[s.key];
               return (
                 <ResultSection key={s.key} section={s} value={result[s.key]} onChange={setField}
-                  running={status[task] === "run"} error={s.key === "tricks" ? null : errors[task]}
+                  running={status[task] === "run"} error={s.key === "tricks" ? null : errors[task]} note={notes[task]}
                   onRetry={retry} defaultOpen={!initial} src={wsrc} />
               );
             })}

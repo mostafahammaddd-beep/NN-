@@ -10,8 +10,7 @@ import WordPop from "./components/WordPop.jsx";
 import TopicScreen from "./screens/TopicScreen.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
 import MoveModal from "./components/MoveModal.jsx";
-import { useVocab, removeWord, vocabKey } from "./lib/vocab.js";
-import { setKnownWords } from "./lib/wordtr.js";
+import { removeWord, vocabKey } from "./lib/vocab.js";
 import { applyOps, assignedSet, dropItem, moveItem, navFor, organize, renameTopic, dropTopic } from "./lib/topics.js";
 import { store, prefs } from "./lib/storage.js";
 import { ENV_KEY, warmUp, warmConnection } from "./lib/gemini.js";
@@ -132,10 +131,6 @@ export default function App({ boot }) {
   /* the launch splash (native icon screen + the cover in index.html) is handed over to the app after the first real paint */
   useEffect(() => { hideSplash(); }, []);
 
-  /* meanings the app already knows → tapping such a word never calls Gemini */
-  const { map: vmap } = useVocab();
-  useEffect(() => { setKnownWords([...Object.values(vmap).map((e) => e.line), ...questions.map((q) => q.new_words)]); }, [questions, vmap]);
-
   /* warm the network while the user is still choosing a picture */
   useEffect(() => { syncUsageKey(apiKey); warmUp(apiKey); warmConnection(apiKey); }, [apiKey]);
 
@@ -153,7 +148,7 @@ export default function App({ boot }) {
     document.documentElement.dataset.theme = next;
     prefs.set("nclex:theme", next);
     const m = document.querySelector('meta[name="theme-color"]');
-    if (m) m.setAttribute("content", next === "dark" ? "#061317" : "#EFF6F4");
+    if (m) m.setAttribute("content", next === "dark" ? "#0A1120" : "#F3F7FB");
   };
 
   const say = (msg, ms = 2800) => {
@@ -353,7 +348,7 @@ export default function App({ boot }) {
           library={{ questions, topics, focusId: view.name === "edit" ? view.id : null, focusTopicId: view.name === "topic" ? view.id : null }} />
       )}
       {moveQ && <MoveModal title={moveQ.title} topics={topics} currentId={(topics.list.find((t) => t.qids.includes(moveQ.id)) || {}).id} onPick={(t) => moveTo(moveQ.id, t)} onClose={() => setMoveFor(null)} />}
-      <WordPop apiKey={apiKey} />
+      <WordPop />
       {showBackup && <BackupModal onClose={() => setShowBackup(false)} />}
       {showKey && <KeyModal current={apiKey === ENV_KEY ? "" : apiKey} hasEnv={!!ENV_KEY} onSave={saveKey} onClose={() => setShowKey(false)} />}
       <Toast msg={toast} />

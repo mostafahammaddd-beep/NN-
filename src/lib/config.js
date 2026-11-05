@@ -20,7 +20,7 @@ export const CHIPS = [
 export const SECTIONS = [
   { key: "original_question_text", title: "نص السؤال", sub: "اللي اتقرا من الصورة أو الملف", icon: "fileText", rows: 6, cls: "sec-sky", ltr: true, step: "read",
     wait: "بنقرا السؤال من الصورة أو الملف…" },
-  { key: "new_words", title: "كلمات جديدة", sub: "الكلمات من مستوى B1 فما فوق + المصطلحات الطبية", icon: "library", rows: 8, cls: "sec-violet", step: "words",
+  { key: "new_words", title: "كلمات جديدة", sub: "الكلمات من مستوى B2 فما فوق + المصطلحات الطبية", icon: "library", rows: 8, cls: "sec-violet", step: "words",
     wait: "بنلمّ كل كلمة ممكن تكون غريبة عليك…" },
   { key: "explanation", title: "تفصيص السؤال", sub: "شرح من الصفر + الإنجليزي", icon: "brain", rows: 12, cls: "sec-teal", step: "explain",
     wait: "بيفكّر في السؤال علشان يشرحه من الصفر…" },

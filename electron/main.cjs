@@ -5,7 +5,6 @@ const path = require("path");
 
 const BRAND = "#1CA3BE";
 const GEMINI_HOST = "https://generativelanguage.googleapis.com/*";
-const PICTURE_HOST = "https://image.pollinations.ai/*";   // free no-key picture engine used by the chat
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -55,7 +54,7 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
 
   // The page is served from file://, so Google's API must be allowed to answer it (CORS). Only the Gemini host is touched.
-  session.defaultSession.webRequest.onHeadersReceived({ urls: [GEMINI_HOST, PICTURE_HOST] }, (details, cb) => {
+  session.defaultSession.webRequest.onHeadersReceived({ urls: [GEMINI_HOST] }, (details, cb) => {
     const headers = {};
     for (const [k, v] of Object.entries(details.responseHeaders || {})) {
       if (!/^access-control-allow-/i.test(k)) headers[k] = v;

@@ -1,27 +1,24 @@
-/* ───────────── Pictures in the chat — three engines, tried in order ─────────────
-   Google does NOT give image generation to free API keys (confirmed by Google's own pricing page and forum staff).
-   So the chat has two engines that work with a FREE key, and keeps Google's own image model for keys with billing:
+/* ───────────── Pictures in the chat ─────────────
+   Google does NOT give image generation to free API keys, so the default engine is the infographic:
 
-     diagram  Gemini's free TEXT model writes an SVG drawing: labelled schemes, flow-charts, cycles, mnemonic cards.
-              Always works with a free key, the words inside are spelled right (the thing that matters for study).
-     art      a real text-to-image model (FLUX) through Pollinations.ai — free, no key, no sign-up. The words
-              "no text inside the picture" are added, because image models cannot spell. ~1 picture / 15 s.
+     diagram  the free TEXT model writes a tiny JSON, our own code lays it out (see infographic.js). Fast, tidy, words spelled right.
      gemini   Google's Nano Banana models — only works when the API key has billing enabled.
 
-   Order for each choice:  diagram → [diagram]   art → [art, diagram]   gemini → [gemini, art, diagram]  */
+   Order:  diagram → [diagram]   gemini → [gemini, diagram]
+   (The free "real picture" engine, Pollinations/FLUX, was removed: slow, unreliable and the pictures were not good enough.) */
 
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { getModelLists, runTask, generateImage } from "./gemini.js";
 import { sourceParts } from "./docs.js";
 import { fixText } from "./text.js";
+import { INFO_SYSTEM, parseInfo, renderInfographic } from "./infographic.js";
 import { imagePrompt } from "./chat.js";
 
 export const ENGINES = [
   { id: "diagram", label: "رسم توضيحي", hint: "دقيق وبعناوين صح · مجاني" },
-  { id: "art", label: "صورة فنية AI", hint: "صورة حقيقية · مجاني بدون مفتاح" },
   { id: "gemini", label: "Gemini 💳", hint: "أعلى جودة · بيحتاج Billing" },
 ];
-const LABEL = { diagram: "رسم توضيحي", art: "صورة فنية", gemini: "Gemini" };
+const LABEL = { diagram: "رسم توضيحي", gemini: "Gemini" };
 const LS_ENGINE = "nclex:imgengine";
 const LS_BLOCK = "nclex:imgblock:gemini";
 
@@ -71,9 +68,29 @@ LAYOUT (this is what makes it look professional):
 Labels are in ENGLISH, spelled exactly right. Arabic only if the student asks (direction="rtl", text-anchor="middle"). Medical accuracy first: never invent values, anatomy or drugs.
 Before you output, check silently: well-formed XML, every tag closed, every text inside its card and the canvas.`;
 
+const INFO_CACHE = new Map();
 async function runDiagram({ apiKey, ctx, request, atts, signal }) {
   const lists = getModelLists(apiKey);
   const refs = atts && atts.length ? sourceParts({ kind: "bundle", items: atts }, null) : [];
+  /* fast path: tiny JSON from the model + our own layout engine (seconds, always tidy, never overflows). Same request again → instant (cache). */
+  const ckey = `${request.trim().toLowerCase()}|${cap(ctx.question, 300)}`;
+  if (INFO_CACHE.has(ckey)) return { ...INFO_CACHE.get(ckey) };
+  let bad = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const j = await runTask({
+        apiKey, task: "lesson:diagram", signal, models: [...lists.fast, ...lists.pro],
+        system: INFO_SYSTEM + (bad ? `\n\nYour previous reply could not be drawn (${bad}). Reply again with a valid JSON object that follows the rules.` : ""),
+        parts: [...refs, { text: `CONTEXT — the question and lesson he is studying:\n${cap(ctx.question, 1500)}\n${cap(ctx.explanation, 1500)}\n\nSTUDENT REQUEST: ${request}` }],
+        spec: { levels: ["low", "minimal"], budget: 512 }, maxOut: 3500, hedgeMs: 5000, firstMs: 30000, idleMs: 20000,
+      });
+      const res = { mime: "image/svg+xml", data: toB64(renderInfographic(parseInfo(j.text))), text: "" };
+      if (INFO_CACHE.size > 24) INFO_CACHE.delete(INFO_CACHE.keys().next().value);
+      INFO_CACHE.set(ckey, res);
+      return { ...res };
+    } catch (e) { if (e && e.name === "AbortError") throw e; bad = String((e && e.message) || "invalid").slice(0, 80); }
+  }
+  /* last resort: free-form SVG written by the model (slower, less tidy) */
   let last = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const out = await runTask({
@@ -86,59 +103,6 @@ async function runDiagram({ apiKey, ctx, request, atts, signal }) {
     catch (e) { last = e.svgError || e.message; if (attempt) throw e; }
   }
   throw new Error("الرسم ما طلعش صح. جرّب توصفه بشكل تاني.");
-}
-
-/* ── art: Pollinations (FLUX) ── */
-const ART_STYLE = "highly detailed, sharp focus, vibrant harmonious colours, professional quality, no text, no letters, no watermark";
-async function artPrompt({ apiKey, ctx, request, signal }) {
-  if (/^[\x20-\x7E]+$/.test(request) && request.length < 220) return `${request}, ${ART_STYLE}`;   // already English → skip the extra model call (saves seconds)
-  const lists = getModelLists(apiKey);
-  const out = await runTask({
-    apiKey, task: "word", signal, models: [...lists.fast, ...lists.pro],
-    system: `You write prompts for a text-to-image model (FLUX). Output ONE English prompt, at most 70 words, nothing else.
-Describe exactly what the student asks for, concretely and visually (subject, pose, setting, light, colours). If it is a medical / anatomy / process topic: a clean, modern, accurate flat-vector educational illustration on a soft pastel background. If it is an animal, object or scene: a beautiful, polished artwork of it. The model cannot spell, so there must be NO words, NO letters, NO numbers and NO labels in the picture.`,
-    parts: [{ text: `Context (what the student studies):\n${cap(ctx.question, 500)}\n\nThe student asks for: ${request}` }],
-    spec: { levels: ["minimal", "low"], budget: 0 }, maxOut: 300, hedgeMs: 2500, firstMs: 15000, idleMs: 12000,
-  });
-  const p = String(out.text || "").replace(/["\n]+/g, " ").replace(/\s+/g, " ").trim();
-  return `${p || request}, ${ART_STYLE}`;
-}
-
-async function fetchBlob(url, signal) {
-  let r;
-  try { r = await fetch(url, { signal }); }
-  catch (e) {
-    if (e && e.name === "AbortError") throw e;
-    if (!Capacitor.isNativePlatform()) throw e;
-    const n = await CapacitorHttp.request({ url, method: "GET", responseType: "blob", readTimeout: 120000, connectTimeout: 30000 });   // WebView could not reach it, native can
-    return { status: n.status, mime: (n.headers && (n.headers["Content-Type"] || n.headers["content-type"])) || "image/jpeg", b64: n.data, size: String(n.data || "").length * 0.75 };
-  }
-  const blob = await r.blob();
-  const b64 = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(",")[1] || ""); fr.onerror = () => rej(new Error("read")); fr.readAsDataURL(blob); });
-  return { status: r.status, mime: blob.type || "image/jpeg", b64, size: blob.size };
-}
-
-const sleep = (ms, signal) => new Promise((ok, no) => { const t = setTimeout(ok, ms); signal && signal.addEventListener("abort", () => { clearTimeout(t); no(abortError()); }, { once: true }); });
-
-async function runArt({ apiKey, ctx, request, signal, onStatus }) {
-  const prompt = await artPrompt({ apiKey, ctx, request, signal });
-  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=768&model=flux&nologo=true&seed=${Math.floor(Math.random() * 1e6)}`;
-  /* one try, never longer than 60 s: if the free service hangs we fall through to the diagram engine instead of leaving the student waiting */
-  const once = async () => {
-    const c = new AbortController(), t = setTimeout(() => c.abort(), 60000), onA = () => c.abort();
-    signal && signal.addEventListener("abort", onA, { once: true });
-    try { return await fetchBlob(url, c.signal); }
-    catch (e) { if (signal && signal.aborted) throw abortError(); throw new Error("خدمة الصور المجانية اتأخرت."); }
-    finally { clearTimeout(t); signal && signal.removeEventListener("abort", onA); }
-  };
-  let res = await once();
-  for (let i = 0; i < 3 && [429, 500, 502, 503, 504].includes(res.status); i++) {   // anonymous tier: busy → short retries instead of one long 16 s wait
-    onStatus && onStatus("wait");
-    await sleep(4000 + i * 3000, signal);
-    res = await once();
-  }
-  if (res.status !== 200 || !/^image\//.test(res.mime) || res.size < 3000) throw new Error(res.status === 429 ? "خدمة الصور المجانية مشغولة دلوقتي." : "خدمة الصور المجانية ما ردّتش.");
-  return { mime: res.mime, data: res.b64, text: "" };
 }
 
 /* ── Google's own model (only with billing) ── */
@@ -154,11 +118,11 @@ async function runGemini({ apiKey, ctx, request, atts, signal }) {
   }
 }
 
-const RUN = { diagram: runDiagram, art: runArt, gemini: runGemini };
+const RUN = { diagram: runDiagram, gemini: runGemini };
 
 /* → { mime, data, text, engine, notes[] }   notes = what was tried and failed on the way */
 export async function makePicture({ engine, apiKey, ctx, request, atts = [], signal, onStatus }) {
-  const order = engine === "gemini" ? ["gemini", "art", "diagram"] : engine === "art" ? ["art", "diagram"] : ["diagram"];
+  const order = engine === "gemini" ? ["gemini", "diagram"] : ["diagram"];
   const notes = [];
   for (let i = 0; i < order.length; i++) {
     const e = order[i];

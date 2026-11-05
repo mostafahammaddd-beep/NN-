@@ -12,6 +12,11 @@
      dies while thinking is replaced by the next one before the user has seen anything.
    • systemInstruction carries the static prompt → Gemini's implicit cache can reuse it between runs.
    • Models that are unavailable for the key (404 / quota 0) are remembered for 6 h, even across app restarts.
+   • v3.13 — RETIRED models: Google keeps listing gemini-2.5-* in ListModels but answers 404 "no longer available to
+     new users" for keys that never used them. Such a model is now (1) dropped from the candidate lists, (2) remembered
+     as retired for 7 days, (3) replaced at once by the model Google names in the error message, and (4) triggers a
+     background refresh of the model list. When EVERY model fails, the error shown is the most informative one
+     (rate limit / server / timeout beat "model unavailable"), plus a one-line list of what each model answered.
    • If WebView fetch cannot reach Google (CORS / network), it falls back to the native Capacitor HTTP client
      (non-streaming) automatically.                                                                       */
 
@@ -24,11 +29,15 @@ export const API_BASE = ENV.VITE_API_BASE || "https://generativelanguage.googlea
 
 /* ── errors ── */
 
+const RETIRED_RE = /no longer available|not available to new users|has been (?:shut ?down|retired|deprecated)|is deprecated/;
+
 export function friendlyError(status, message) {
   const m = (message || "").toLowerCase();
   if (/api key|api_key/.test(m) || status === 401 || status === 403)
     return "مفتاح الـ API مش مقبول أو مالوش صلاحية. اتأكد من المفتاح من أيقونة 🔑 فوق.";
+  if (status === 429 && /per\s?day|daily|perday/.test(m)) return "خلصت حصة الطلبات اليومية بتاعة مفتاحك. بتتجدد منتصف الليل بتوقيت المحيط الهادي، أو استخدم مفتاح تاني.";
   if (status === 429) return "وصلت للحد المسموح من الطلبات. استنى دقيقة وجرّب تاني.";
+  if (status === 404 && RETIRED_RE.test(m)) return "الموديل ده اتقفل على المفاتيح الجديدة. التطبيق بيحوّل لموديل أحدث لوحده، جرّب تاني.";
   if (status === 400 && /pdf|document/.test(m)) return "ملف الـ PDF مش مقروء أو مش مدعوم. جرّب ملف تاني أو صوّر الصفحة.";
   if (status === 400 && m.includes("image")) return "الصورة مش واضحة أو مش مدعومة. جرّب صورة تانية.";
   if (status >= 500) return "سيرفرات Google مشغولة دلوقتي. جرّب تاني بعد شوية.";
@@ -36,9 +45,16 @@ export function friendlyError(status, message) {
 }
 
 function apiError(status, bodyText) {
-  let message = "";
-  try { message = JSON.parse(bodyText)?.error?.message || ""; } catch (e) { message = String(bodyText || "").slice(0, 200); }
-  return classify(status, message);
+  let message = "", retryMs = 0;
+  try {
+    const j = JSON.parse(bodyText);
+    message = j?.error?.message || "";
+    const ri = (j?.error?.details || []).find((d) => d && d.retryDelay);
+    if (ri) retryMs = Math.round(parseFloat(String(ri.retryDelay)) * 1000) || 0;
+  } catch (e) { message = String(bodyText || "").slice(0, 200); }
+  const err = classify(status, message);
+  if (!err.retryAfterMs && retryMs) err.retryAfterMs = Math.min(retryMs, 60000);
+  return err;
 }
 
 function classify(status, message) {
@@ -53,7 +69,15 @@ function classify(status, message) {
     (status === 403 && /api key|api_key|referer|ip address|has not been used|is disabled/.test(m))
   );
   if (status === 429) noteQuota(message);
-  err.dead = status === 404 || (status === 429 && /limit:\s*0/.test(m)) || (status === 403 && !err.fatal);
+  err.daily = status === 429 && /per\s?day|daily|perday/.test(m);
+  const ra = m.match(/retry in ([\d.]+)\s*s/);
+  if (ra) err.retryAfterMs = Math.min(Math.round(parseFloat(ra[1]) * 1000), 60000);
+  /* a model whose DAILY quota is gone (or whose free quota is 0) cannot answer for hours; the other models have their own quota */
+  err.dead = status === 404 || (status === 429 && (/limit:\s*0/.test(m) || err.daily)) || (status === 403 && !err.fatal);
+  /* "This model models/gemini-2.5-pro is no longer available to new users. Please update your code to use models/gemini-3.1-pro-preview …" */
+  err.retired = status === 404 && RETIRED_RE.test(m);
+  const rep = err.retired && String(message || "").match(/(?:use|using|switch to|migrate to)\s+(?:the\s+)?(?:models\/)?(gemini-[a-z0-9.\-]+)/i);
+  if (rep) err.replacement = rep[1].toLowerCase().replace(/[.,;:\-]+$/, "");
   return err;
 }
 
@@ -96,40 +120,68 @@ export async function rawRequest(method, url, body, timeoutMs) {
 
 /* ── model lists (cached, never blocking) ── */
 
+/* Only "-latest" aliases + the current generation: Google moves the aliases forward by itself, so these keep working
+   when a specific model is retired. gemini-2.5-* is NOT here on purpose (404 for every key that never used it). */
 const DEFAULT_LISTS = {
-  fast: ["gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest"],
-  pro: ["gemini-pro-latest", "gemini-2.5-pro"],
+  fast: ["gemini-flash-latest", "gemini-flash-lite-latest"],
+  pro: ["gemini-pro-latest", "gemini-3.1-pro-preview"],
 };
-const LS_MODELS = "nclex:models:v3";
+const LS_MODELS = "nclex:models:v5";
 const keyTag = (k) => (k || "").slice(-8);
 let _lists = null;
 
 /* models that are unavailable for this key (404 / quota 0): remembered across restarts for a few hours,
-   so the first analysis of a new session does not waste a round trip on a model that cannot answer */
-const LS_DEAD = "nclex:dead:v1";
+   so the first analysis of a new session does not waste a round trip on a model that cannot answer.
+   RETIRED models ("no longer available to new users") are remembered for a week and survive list refreshes. */
+const LS_DEAD = "nclex:dead:v2";
 const DEAD_TTL = 6 * 3600e3;
+const RETIRED_TTL = 7 * 864e5;
 let _deadMem = null;
-function deadMap(apiKey) {
+function deadState(apiKey) {
   const k = keyTag(apiKey);
-  if (_deadMem && _deadMem.k === k) return _deadMem.map;
-  let map = {};
-  try { const raw = JSON.parse(window.localStorage.getItem(LS_DEAD)); if (raw && raw.k === k && raw.map) map = raw.map; } catch (e) { /* ignore */ }
-  _deadMem = { k, map };
-  return map;
+  if (_deadMem && _deadMem.k === k) return _deadMem;
+  let st = { k, map: {}, ret: {} };
+  try { const raw = JSON.parse(window.localStorage.getItem(LS_DEAD)); if (raw && raw.k === k) st = { k, map: raw.map || {}, ret: raw.ret || {} }; } catch (e) { /* ignore */ }
+  _deadMem = st;
+  return st;
 }
+const saveDead = (st) => { try { window.localStorage.setItem(LS_DEAD, JSON.stringify(st)); } catch (e) { /* ignore */ } };
 const deadSet = (apiKey) => {
-  const map = deadMap(apiKey), now = Date.now();
-  return new Set(Object.keys(map).filter((m) => map[m] > now));
+  const st = deadState(apiKey), now = Date.now();
+  return new Set([...Object.keys(st.map).filter((m) => st.map[m] > now), ...Object.keys(st.ret).filter((m) => st.ret[m] > now)]);
 };
-const addDead = (apiKey, model) => {
-  const map = deadMap(apiKey);
-  map[model] = Date.now() + DEAD_TTL;
-  try { window.localStorage.setItem(LS_DEAD, JSON.stringify({ k: keyTag(apiKey), map })); } catch (e) { /* ignore */ }
+const addDead = (apiKey, model, retired) => {
+  const st = deadState(apiKey);
+  if (retired) st.ret[model] = Date.now() + RETIRED_TTL; else st.map[model] = Date.now() + DEAD_TTL;
+  saveDead(st);
 };
-const clearDead = () => {
-  _deadMem = null;
-  try { window.localStorage.removeItem(LS_DEAD); } catch (e) { /* ignore */ }
+const clearDead = (apiKey) => {            // a fresh model list gives temporary failures a new chance; retired models stay retired
+  const st = deadState(apiKey);
+  st.map = {};
+  saveDead(st);
 };
+
+/* the replacement Google names inside a "no longer available" error is trusted for the next analysis too */
+const LS_SUGGEST = "nclex:suggest:v1";
+const readSuggest = (apiKey) => {
+  try { const r = JSON.parse(window.localStorage.getItem(LS_SUGGEST)); if (r && r.k === keyTag(apiKey) && Date.now() - r.t < 30 * 864e5) return r.models || []; } catch (e) { /* ignore */ }
+  return [];
+};
+const addSuggest = (apiKey, model) => {
+  if (!/^gemini-[a-z0-9.\-]+$/.test(model || "")) return;
+  const cur = readSuggest(apiKey);
+  if (cur.includes(model)) return;
+  try { window.localStorage.setItem(LS_SUGGEST, JSON.stringify({ k: keyTag(apiKey), t: Date.now(), models: [model, ...cur].slice(0, 4) })); } catch (e) { /* ignore */ }
+  _lists = null;                              // lists are rebuilt with the suggestion on the next read
+};
+
+/* a retired model → refresh the model list from Google in the background (at most once every 10 minutes) */
+let _selfHealAt = 0;
+function selfHeal(apiKey) {
+  if (!apiKey || Date.now() - _selfHealAt < 10 * 60e3) return;
+  _selfHealAt = Date.now();
+  refreshModels(apiKey, { force: true }).catch(() => {});
+}
 
 const modelRank = (n) => {
   const tier = /pro/.test(n) ? 2 : /lite/.test(n) ? 0 : 1;
@@ -138,42 +190,60 @@ const modelRank = (n) => {
   return tier * 1000 + base - (/preview|exp/.test(n) ? 1 : 0);
 };
 
+const withSuggestions = (apiKey, lists) => {
+  const dead = deadSet(apiKey);
+  const extra = readSuggest(apiKey).filter((m) => !dead.has(m));
+  const ok = (arr) => arr.filter((m) => !deadState(apiKey).ret[m] || deadState(apiKey).ret[m] <= Date.now());
+  const pro = [...extra.filter((m) => /pro/.test(m)), ...lists.pro];
+  const fast = [...extra.filter((m) => !/pro/.test(m)), ...lists.fast];
+  return { fast: [...new Set(ok(fast))], pro: [...new Set(ok(pro))] };
+};
+
 export function getModelLists(apiKey) {
-  if (_lists && _lists.k === keyTag(apiKey)) return _lists.lists;
+  if (_lists && _lists.k === keyTag(apiKey) && _lists.out) return _lists.out;
+  let base = DEFAULT_LISTS;
   try {
     const raw = JSON.parse(window.localStorage.getItem(LS_MODELS));
-    if (raw && raw.k === keyTag(apiKey) && Date.now() - raw.t < 3 * 864e5) { _lists = raw; return raw.lists; }
+    if (raw && raw.k === keyTag(apiKey) && Date.now() - raw.t < 3 * 864e5) base = raw.lists;
   } catch (e) { /* ignore */ }
-  return DEFAULT_LISTS;
+  const out = withSuggestions(apiKey, base);
+  _lists = { k: keyTag(apiKey), lists: base, out };
+  return out;
 }
+
+/* generation number of a model id: gemini-3.1-pro-preview → 3.1 ; "-latest" aliases have none → treated as newest */
+const genOf = (n) => { const v = (n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1]; return v ? parseFloat(v) : 99; };
 
 export async function refreshModels(apiKey, { force = false } = {}) {
   if (!apiKey) return DEFAULT_LISTS;
   if (!force) {
     try {
       const raw = JSON.parse(window.localStorage.getItem(LS_MODELS));
-      if (raw && raw.k === keyTag(apiKey) && Date.now() - raw.t < 864e5) { _lists = raw; return raw.lists; }
+      if (raw && raw.k === keyTag(apiKey) && Date.now() - raw.t < 864e5) { _lists = null; return getModelLists(apiKey); }
     } catch (e) { /* ignore */ }
   }
   const { status, json } = await rawRequest("GET", `${API_BASE}?pageSize=200&key=${encodeURIComponent(apiKey)}`, undefined, 30000);
   if (status !== 200) throw classify(status, json?.error?.message || "");
-  const found = (json.models || [])
+  const all = (json.models || [])
     .filter((m) => (m.supportedGenerationMethods || []).includes("generateContent") && /^models\/gemini-/.test(m.name)
-      && !/image|tts|audio|live|embed|robotics|computer|learnlm|gemma|aqa|vision|deep-research|customtools/i.test(m.name))
-    .map((m) => m.name.replace("models/", ""))
-    .sort((x, y) => modelRank(y) - modelRank(x));
+      && !/image|tts|audio|live|embed|robotics|computer|learnlm|gemma|aqa|vision|deep-research|customtools|transcri|speech/i.test(m.name))
+    .map((m) => m.name.replace("models/", ""));
+  /* ListModels still lists gemini-2.5-* although new keys get 404 on them → keep the 3.x generation (and the -latest aliases)
+     whenever it exists; the old generation is used only if nothing newer is listed at all */
+  const modern = all.filter((n) => genOf(n) >= 3);
+  const found = (modern.length ? modern : all).sort((x, y) => modelRank(y) - modelRank(x));
   const pro = found.filter((n) => /pro/.test(n)).slice(0, 3);
-  const flash = found.filter((n) => !/pro/.test(n) && !/lite/.test(n)).slice(0, 3);
-  const lite = found.filter((n) => /lite/.test(n)).slice(0, 1);
+  const flash = found.filter((n) => !/pro/.test(n) && !/lite/.test(n)).slice(0, 4);   // capacity is per model: more distinct models = more chances
+  const lite = found.filter((n) => /lite/.test(n)).slice(0, 2);
   const fast = [...flash, ...lite];
   const lists = {
     fast: fast.length ? fast : (pro.length ? pro : DEFAULT_LISTS.fast),
     pro: pro.length ? pro : (flash.length ? flash : DEFAULT_LISTS.pro),
   };
-  _lists = { k: keyTag(apiKey), t: Date.now(), lists };
-  clearDead();
-  try { window.localStorage.setItem(LS_MODELS, JSON.stringify(_lists)); } catch (e) { /* ignore */ }
-  return lists;
+  try { window.localStorage.setItem(LS_MODELS, JSON.stringify({ k: keyTag(apiKey), t: Date.now(), lists })); } catch (e) { /* ignore */ }
+  clearDead(apiKey);
+  _lists = null;
+  return getModelLists(apiKey);
 }
 
 export async function testConnection(apiKey) {
@@ -356,7 +426,7 @@ async function attemptModel({ apiKey, model, task, system, parts, spec, maxOut, 
       const out = await streamOrNative({ apiKey, model, body, signal, onText, onAlive, firstMs, idleMs });
       if (!out.text.trim()) {
         throw Object.assign(new Error(out.block ? "السؤال اتحجب من فلتر الأمان بتاع Google. جرّب صورة تانية." : "الذكاء الاصطناعي رجّع رد فاضي. جرّب تاني."),
-          { detail: `${model} · ${out.finish || out.block || "empty"}`, emptyReply: true });
+          { detail: `${model} · ${out.finish || out.block || "empty"}`, emptyReply: true, blocked: !!out.block });
       }
       writeMemo(model, task, idx);
       return out;
@@ -374,20 +444,64 @@ async function attemptModel({ apiKey, model, task, system, parts, spec, maxOut, 
    other candidates are cancelled. If the claimer dies before anything was shown, the race re-opens and the next
    model starts at once; if text was already shown, the error is reported (we never silently switch mid-answer). */
 
-function raceModels({ apiKey, models, run, hedgeMs, signal, onText }) {
+/* When every model failed, show the error that tells the student what to DO, not just the last one that happened to fail:
+   a rate limit / server / network / timeout error beats "this model is unavailable". */
+function bestError(errs, tried) {
+  const real = errs.filter((e) => !e.dead);
+  const daily = errs.filter((e) => e.daily);
+  const pick = real.length ? real[real.length - 1] : (daily.length ? daily[daily.length - 1] : null);
+  const trail = tried.join(" | ").slice(0, 600);
+  if (pick) { pick.detail = [pick.detail, trail && trail !== pick.detail ? "المحاولات: " + trail : ""].filter(Boolean).join(" — "); return pick; }
+  const e = new Error("مفيش موديل شغّال على مفتاحك دلوقتي: كل الموديلات اللي جرّبها التطبيق اتقفلت أو مش متاحة للمفاتيح الجديدة. جرّب تدوس 🔑 ← \"اختبار الاتصال\" عشان يحدّث الموديلات، ولو فضل كده اعمل مفتاح جديد من Google AI Studio.");
+  e.detail = "المحاولات: " + trail;
+  e.dead = true;
+  return e;
+}
+
+/* ── model health board (shared by every task of the app) ──
+   A 503 / 429-per-minute / timeout is a statement about ONE model at THIS moment. The first task that hits it puts the
+   model on a short, growing cool-down; every other task (they all run in parallel) skips it at once instead of each paying
+   its own failed round trip, and the model is tried again automatically when the cool-down ends. */
+const BOARD = new Map();
+const bKey = (apiKey, model) => `${keyTag(apiKey)}|${model}`;
+const bGet = (apiKey, model) => BOARD.get(bKey(apiKey, model)) || { until: 0, fails: 0, at: 0 };
+function coolDown(apiKey, model, err) {
+  const b = bGet(apiKey, model), now = Date.now();
+  if (now - b.at > 3000) b.fails = Math.min(b.fails + 1, 6);      // 5 parallel tasks failing together count once
+  b.at = now;
+  const base = err && err.retryAfterMs ? err.retryAfterMs : Math.min(20000, 1500 * 2 ** (b.fails - 1));   // 1.5 → 3 → 6 → 12 → 20 s
+  b.until = Math.max(b.until, now + base * (0.8 + Math.random() * 0.4));                                   // jitter: no thundering herd
+  BOARD.set(bKey(apiKey, model), b);
+}
+const markGood = (apiKey, model) => BOARD.delete(bKey(apiKey, model));
+const isLite = (m) => /lite/.test(m);
+
+/* Which failures are worth another try? Everything that says "Google is busy / the line dropped" is; a bad key, a blocked
+   question or a bad file is not (retrying cannot change the answer). */
+const isTransient = (e) => !!e && !e.fatal && !e.dead && !e.blocked && !e.thinking &&
+  (e.timeout || e.interrupted || e.netBeforeStart || e.emptyReply || [408, 429, 500, 502, 503, 504].includes(e.status));
+
+const MAX_WAIT_MS = 10 * 60e3;       // a transient outage is waited out for up to 10 minutes before the student ever sees an error
+const LITE_AFTER_MS = 45e3;          // quality tasks fall back to a "lite" model only after the stronger ones failed this long
+
+function raceModels({ apiKey, models, run, task, hedgeMs, signal, onText, onNotice }) {
   return new Promise((resolve, reject) => {
-    const dead = deadSet(apiKey);
-    const alive = models.filter((m) => !dead.has(m));
-    const order = [...new Set(alive.length ? alive : models)];
+    const order = [...new Set(models)];
     if (!order.length) return reject(new Error("مفيش موديل متاح دلوقتي."));
 
-    const ctrls = [];
-    let launched = 0, active = 0, winner = -1, shown = false, settled = false, lastErr = null, hedgeTimer = null;
+    const t0 = Date.now();
+    const liteTask = /^ocr/.test(task || "");                  // copying text from an image: a lite model is as good as any. (Judging word LEVELS is not: lite models list easy words.)
+    const ctrls = new Map();                                   // model → AbortController of its running attempt
+    const errs = [], tried = [];
+    let winner = null, shown = false, shownLen = 0, settled = false, hedgeTimer = null, wakeTimer = null;
+    let attempts = 0, netFails = 0, emptyFails = 0, hedges = 0;
+    const raceDead = new Set();                                // models that cannot answer THIS request (404 / bad config): never retried inside this race
 
+    const clearTimers = () => { clearTimeout(hedgeTimer); clearTimeout(wakeTimer); };
     const finish = (fn) => {
       if (settled) return;
       settled = true;
-      clearTimeout(hedgeTimer);
+      clearTimers();
       ctrls.forEach((c) => c.abort());
       signal && signal.removeEventListener("abort", onAbort);
       fn();
@@ -398,67 +512,112 @@ function raceModels({ apiKey, models, run, hedgeMs, signal, onText }) {
       signal.addEventListener("abort", onAbort);
     }
 
-    const claim = (i) => {
+    const liveModels = () => {
+      const d = deadSet(apiKey);
+      const l = order.filter((m) => !d.has(m) && !raceDead.has(m));
+      /* everything is remembered as unavailable (e.g. a routing hiccup marked them all) → give them one honest chance anyway */
+      return l.length || attempts > 0 ? l : order.filter((m) => !raceDead.has(m));
+    };
+    const liteAllowed = () => liteTask || Date.now() - t0 > LITE_AFTER_MS || liveModels().every(isLite);   // no stronger model left alive → nothing to wait for
+    /* a model that may be started right now: alive, not cooling down, not already running, "lite" only when allowed */
+    const readyModels = () => liveModels().filter((m) => !ctrls.has(m) && bGet(apiKey, m).until <= Date.now() && (!isLite(m) || liteAllowed()));
+
+    const claim = (model) => {
       if (settled) return false;
-      if (winner === -1) {
-        winner = i;
+      if (winner === null) {
+        winner = model;
         clearTimeout(hedgeTimer);
-        ctrls.forEach((c, j) => { if (j !== i) c.abort(); });
+        markGood(apiKey, model);
+        ctrls.forEach((c, m) => { if (m !== model) c.abort(); });
       }
-      return winner === i;
+      return winner === model;
     };
 
     const armHedge = () => {
       clearTimeout(hedgeTimer);
-      if (winner === -1 && launched < order.length && hedgeMs) hedgeTimer = setTimeout(launch, hedgeMs);
+      if (settled || winner !== null || !hedgeMs || hedges >= 2) return;
+      hedgeTimer = setTimeout(() => {
+        if (settled || winner !== null) return;
+        const nxt = readyModels().filter((m) => liteTask || !isLite(m));
+        if (nxt.length) { hedges++; launch(nxt[0]); }
+        armHedge();
+      }, hedgeMs);
     };
 
-    function launch() {
-      if (settled || winner !== -1 || launched >= order.length) return;
-      const i = launched++;
-      const model = order[i];
+    /* nothing running → start the best model that is ready; otherwise sleep until the first cool-down ends */
+    const pump = () => {
+      if (settled || winner !== null || ctrls.size) return;
+      clearTimeout(wakeTimer);
+      const live = liveModels();
+      if (!live.length) return finish(() => reject(bestError(errs, tried)));
+      if (Date.now() - t0 > MAX_WAIT_MS) return finish(() => reject(bestError(errs, tried)));
+      const ready = readyModels();
+      if (ready.length) return launch(ready[0]);
+      /* everything is cooling down (or only "lite" is left and not yet allowed): wait, politely, and tell the UI */
+      const soonest = Math.min(...live.filter((m) => !isLite(m) || liteAllowed()).map((m) => bGet(apiKey, m).until), t0 + LITE_AFTER_MS + 500);
+      const wait = Math.max(400, Math.min(soonest - Date.now(), 20000));
+      if (onNotice) onNotice({ waitMs: wait, attempt: attempts, status: errs.length ? errs[errs.length - 1].status : null });
+      wakeTimer = setTimeout(pump, wait);
+    };
+
+    function launch(model) {
+      if (settled || ctrls.has(model)) return;
       const ctrl = new AbortController();
-      ctrls[i] = ctrl;
-      active++;
+      ctrls.set(model, ctrl);
+      attempts++;
       run(
         model, ctrl.signal,
-        (text) => { if (claim(i)) { shown = true; onText(text, model); } },
-        () => { claim(i); },
+        (text) => {
+          if (!claim(model)) return;
+          if (text.length < shownLen) return;            // a resumed answer re-writes from the start: keep the old text on screen until it catches up
+          shown = true; shownLen = text.length;
+          onText(text, model);
+        },
+        () => { claim(model); },
       ).then((res) => {
-        active--;
-        if (settled || !claim(i)) return;
+        ctrls.delete(model);
+        if (settled || !claim(model)) return;
         finish(() => resolve({ ...res, model }));
-      }).catch((err) => {
-        active--;
+      }).catch((e0) => {
+        const err = e0 || new Error("unknown");
+        ctrls.delete(model);
         if (settled || ctrl.signal.aborted) return;       // lost the race on purpose
-        if (err && err.dead) addDead(apiKey, model);
-        if (winner === i) {
-          if (!shown && !err.fatal && launched < order.length) {   // died while thinking: hand over, nothing was shown
-            winner = -1; lastErr = err;
-            launch(); armHedge();
-            return;
+        tried.push(`${model} → ${err.status || (err.timeout ? "timeout" : err.emptyReply ? "empty" : "net")}${err.retired ? " (retired)" : ""}`);
+        errs.push(err);
+
+        if (err.dead) addDead(apiKey, model, !!err.retired);
+        if (err.retired) {
+          if (err.replacement) {
+            addSuggest(apiKey, err.replacement);
+            if (!order.includes(err.replacement) && !deadSet(apiKey).has(err.replacement)) order.unshift(err.replacement);
           }
-          return finish(() => reject(err));                 // the winner died mid-answer
+          selfHeal(apiKey);
         }
-        lastErr = err;
         if (err.fatal) return finish(() => reject(err));
-        if (launched < order.length) { launch(); armHedge(); }
-        else if (active === 0) finish(() => reject(lastErr));
+        if (err.blocked) return finish(() => reject(err));                           // blocked by Google's safety filter: another try cannot help
+        if (err.dead || !isTransient(err)) raceDead.add(model);                       // this model cannot answer this request → others only
+
+        if (err.netBeforeStart && ++netFails >= 4) return finish(() => reject(err));  // really offline: do not keep the student waiting
+        if (err.emptyReply && ++emptyFails >= 3) return finish(() => reject(err));
+        if (isTransient(err)) coolDown(apiKey, model, err);
+
+        if (winner === model) winner = null;              // it died while answering (or thinking): resume on another / the same model
+        if (winner === null) { pump(); armHedge(); }
       });
       armHedge();
     }
-    launch();
+    pump();
   });
 }
 
 /* public: run one task against a list of candidate models */
-export function runTask({ apiKey, models, task, system, parts, spec, maxOut, hedgeMs, firstMs, idleMs, signal, onText }) {
+export function runTask({ apiKey, models, task, system, parts, spec, maxOut, hedgeMs, firstMs, idleMs, signal, onText, onNotice }) {
   /* callers that only want the final text (word meaning, picture prompt, topics …) pass no onText / signal:
      the engine calls both unconditionally, so give it harmless defaults here, once, for every caller */
   if (typeof onText !== "function") onText = () => {};
   if (!signal) signal = new AbortController().signal;
   return raceModels({
-    apiKey, models, hedgeMs, signal, onText,
+    apiKey, models, task, hedgeMs, signal, onText, onNotice,
     run: (model, sig, emit, alive) => attemptModel({ apiKey, model, task, system, parts, spec, maxOut, signal: sig, onText: emit, onAlive: alive, firstMs, idleMs }),
   });
 }

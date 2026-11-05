@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
 import Icon from "./Icon.jsx";
 import { testConnection } from "../lib/gemini.js";
-import UsageBar from "./UsageBar.jsx";
 
 /* The same yellow ECG line as the app icon, on the same teal → sky gradient. */
 export function Brand({ onClick }) {
@@ -89,7 +88,6 @@ export function KeyModal({ current, hasEnv, onSave, onClose }) {
         <button onClick={runTest} disabled={testing} className="btn btn-ghost" style={{ width: "100%", marginTop: 12 }}>
           {testing ? "بنجرّب الاتصال…" : "جرّب الاتصال"}
         </button>
-        <UsageBar />
         {test && (
           <div role="status" className="test-box" data-ok={test.ok}>
             {test.msg}

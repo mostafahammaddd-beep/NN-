@@ -27,13 +27,13 @@ export const TASK_KEYS = {
 
 const SIMPLE_CFG = {
   ocr: { tier: "fast", levels: ["minimal", "low"], budget: 0, maxOut: 4000, firstMs: 40000, idleMs: 30000, hedgeMs: 4500 },
-  words: { tier: "fast", levels: ["minimal", "low"], budget: 0, maxOut: 8000, firstMs: 40000, idleMs: 30000, hedgeMs: 5500 },
+  words: { tier: "fast", levels: ["low", "minimal"], budget: 512, maxOut: 12000, firstMs: 40000, idleMs: 30000, hedgeMs: 5500 },
 };
 
 const isAbort = (err) => !err || err.name === "AbortError";
 const secs = (ms) => Math.round(ms / 100) / 10;
 
-export function createAnalysis({ kind = "question", history, dataUrl, doc, extra, chips, apiKey, modeId, onUpdate, onDone, onError }) {
+export function createAnalysis({ kind = "question", history, dataUrl, doc, extra, chips, apiKey, modeId, onUpdate, onDone, onError, onNotice }) {
   const L = kind === "lesson";                 // study material (books, notes, slides, pasted text) instead of one exam question
   const mode = MODES[modeId] || MODES.balanced;
   const wordsCap = L ? { a: Math.round(mode.write.words.a * 1.7), b: Math.round(mode.write.words.b * 1.4) } : mode.write.words;
@@ -54,6 +54,7 @@ export function createAnalysis({ kind = "question", history, dataUrl, doc, extra
     spec: { levels: cfg.levels, budget: cfg.budget },
     maxOut: cfg.maxOut, hedgeMs: cfg.hedgeMs, firstMs: cfg.firstMs, idleMs: cfg.idleMs,
     signal, onText,
+    onNotice: onNotice ? (x) => onNotice(/^(solve|lesson)/.test(task) ? "reason" : task, x) : undefined,   // "Google is busy, trying again" → a calm note, not an error
   });
 
   /* the model now and then drops stray letters of another script, or Latin fragments, inside Arabic words.
